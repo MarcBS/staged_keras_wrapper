@@ -2874,7 +2874,7 @@ class Model_Wrapper(object):
         # Build default colours_shapes_dict if not provided
         if colours_shapes_dict is None:
             colours_shapes_dict = dict()
-            
+
         if not colours_shapes_dict:
             default_colours = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
             default_shapes = ['-', 'o', '.']
