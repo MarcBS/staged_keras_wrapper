@@ -634,7 +634,7 @@ def one_hot_2_indices(preds, pad_sequences=True, verbose=0):
     """
     if verbose > 0:
         logging.info('Converting one hot prediction into indices...')
-    preds = map(lambda x: np.nonzero(x)[1], preds)
+    preds = map(lambda x: np.argmax(x, axis=1), preds)
     if pad_sequences:
         preds = [pred[:sum([int(elem > 0) for elem in pred]) + 1] for pred in preds]
     return preds
@@ -701,7 +701,7 @@ def decode_predictions_one_hot(preds, index2word, verbose=0):
     """
     if verbose > 0:
         logging.info('Decoding one hot prediction ...')
-    preds = map(lambda prediction: np.nonzero(prediction)[1], preds)
+    preds = map(lambda prediction: np.argmax(prediction, axis=1), preds)
     PAD = '<pad>'
     flattened_answer_pred = [map(lambda index: index2word[index], pred) for pred in preds]
     answer_pred_matrix = np.asarray(flattened_answer_pred)

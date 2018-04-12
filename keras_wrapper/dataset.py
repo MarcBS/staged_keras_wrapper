@@ -16,8 +16,8 @@ from extra.read_write import create_dir_if_not_exists
 from extra.tokenizers import *
 from .utils import bbox, to_categorical
 
-from .utils import MultiprocessQueue
-import multiprocessing
+#from .utils import MultiprocessQueue
+#import multiprocessing
 
 
 # ------------------------------------------------------- #
@@ -64,6 +64,7 @@ def loadDataset(dataset_path):
 #       DATA BATCH GENERATOR CLASS
 # ------------------------------------------------------- #
 
+"""
 def dataLoad(process_name, net, dataset, max_queue_len, queues):
     print "Starting "+process_name+"..."
     in_queue, out_queue = queues
@@ -106,7 +107,7 @@ def dataLoad(process_name, net, dataset, max_queue_len, queues):
             data = net.prepareData(X_batch, Y_batch)
 
         out_queue.put(data)
-
+"""
 
 class Data_Batch_Generator(object):
     """
@@ -129,7 +130,7 @@ class Data_Batch_Generator(object):
                  temporally_linked=False,
                  init_sample=-1,
                  final_sample=-1,
-                 n_parallel_loaders=1):
+                 n_parallel_loaders=None):
         """
         Initializes the Data_Batch_Generator
         :param set_split: Split (train, val, test) to retrieve data
@@ -144,7 +145,6 @@ class Data_Batch_Generator(object):
         :param random_samples: Retrieves this number of training samples
         :param shuffle: Shuffle the training dataset
         :param temporally_linked: Indicates if we are using a temporally-linked model
-        :param n_parallel_loaders: Number of parallel loaders that will be used.
         """
         self.set_split = set_split
         self.dataset = dataset
@@ -155,7 +155,6 @@ class Data_Batch_Generator(object):
         self.init_sample = init_sample
         self.final_sample = final_sample
         self.next_idx = None
-        self.thread_list = []
 
         # Several parameters
         self.params = {'batch_size': batch_size,
@@ -165,15 +164,7 @@ class Data_Batch_Generator(object):
                        'normalization_type': normalization_type,
                        'num_iterations': num_iterations,
                        'random_samples': random_samples,
-                       'shuffle': shuffle,
-                       'n_parallel_loaders': n_parallel_loaders}
-
-    def __del__(self):
-        self.terminateThreads()
-
-    def terminateThreads(self):
-        for t in self.thread_list:
-            t.terminate()
+                       'shuffle': shuffle}
 
     def generator(self):
         """
@@ -181,28 +172,13 @@ class Data_Batch_Generator(object):
         :return: generator with the data
         """
 
-        self.terminateThreads()
-
         if self.set_split == 'train' and not self.predict:
             data_augmentation = self.params['data_augmentation']
         else:
             data_augmentation = False
 
-        # Initialize list of parallel data loaders
-        thread_mngr = multiprocessing.Manager()
-        in_queue = MultiprocessQueue(thread_mngr, type='Queue')# if self.params['n_parallel_loaders'] > 1 else 'Pipe')
-        out_queue = MultiprocessQueue(thread_mngr, type='Queue')# if self.params['n_parallel_loaders'] > 1 else 'Pipe')
-        # Create a queue per function
-        for i in range(self.params['n_parallel_loaders']):
-            # create process
-            new_process = multiprocessing.Process(target=dataLoad,
-                                                  args=('dataLoad_process_'+str(i),
-                                                  self.net, self.dataset, int(self.params['n_parallel_loaders']*1.5), [in_queue, out_queue]))
-            self.thread_list.append(new_process) # store processes for terminating later
-            new_process.start()
-
         it = 0
-        while True:
+        while 1:
             if self.set_split == 'train' and it % self.params['num_iterations'] == 0 and \
                     not self.predict and self.params['random_samples'] == -1 and self.params['shuffle']:
                 silence = self.dataset.silence
@@ -223,8 +199,7 @@ class Data_Batch_Generator(object):
                 batch_size = final_sample - init_sample
                 it = 0
 
-            ##### Recovers a batch of data #####
-            # random data selection
+            # Recovers a batch of data
             if self.params['random_samples'] > 0:
                 num_retrieve = min(self.params['random_samples'], self.params['batch_size'])
                 if self.temporally_linked:
@@ -237,38 +212,64 @@ class Data_Batch_Generator(object):
                     indices = np.random.randint(0, n_samples_split, num_retrieve)
                 self.params['random_samples'] -= num_retrieve
 
-                # Prepare query data for parallel data loaders
-                query_data = ['indices', self.predict, self.set_split, [indices],
-                                self.params['normalization'], self.params['normalization_type'],
-                                self.params['mean_substraction'], data_augmentation]
+                # At sampling from train/val, we always have Y
+                if self.predict:
+                    X_batch = self.dataset.getX_FromIndices(self.set_split,
+                                                            indices,
+                                                            normalization=self.params['normalization'],
+                                                            normalization_type=self.params['normalization_type'],
+                                                            meanSubstraction=self.params['mean_substraction'],
+                                                            dataAugmentation=data_augmentation)
+                    data = self.net.prepareData(X_batch, None)[0]
 
-            # specific data selection
+                else:
+                    X_batch, Y_batch = self.dataset.getXY_FromIndices(self.set_split,
+                                                                      indices,
+                                                                      normalization=self.params['normalization'],
+                                                                      normalization_type=self.params['normalization_type'],
+                                                                      meanSubstraction=self.params['mean_substraction'],
+                                                                      dataAugmentation=data_augmentation)
+                    data = self.net.prepareData(X_batch, Y_batch)
+
             elif self.init_sample > -1 and self.final_sample > -1:
                 indices = range(self.init_sample, self.final_sample)
+                if self.predict:
+                    X_batch = self.dataset.getX_FromIndices(self.set_split,
+                                                            indices,
+                                                            normalization=self.params['normalization'],
+                                                            normalization_type=self.params['normalization_type'],
+                                                            meanSubstraction=self.params['mean_substraction'],
+                                                            dataAugmentation=data_augmentation)
+                    data = self.net.prepareData(X_batch, None)[0]
 
-                # Prepare query data for parallel data loaders
-                query_data = ['indices', self.predict, self.set_split, [indices],
-                                self.params['normalization'], self.params['normalization_type'],
-                                self.params['mean_substraction'], data_augmentation]
+                else:
+                    X_batch, Y_batch = self.dataset.getXY_FromIndices(self.set_split,
+                                                                      indices,
+                                                                      normalization=self.params['normalization'],
+                                                                      normalization_type=self.params['normalization_type'],
+                                                                      meanSubstraction=self.params['mean_substraction'],
+                                                                      dataAugmentation=data_augmentation)
+                    data = self.net.prepareData(X_batch, Y_batch)
 
-            # consecutive data selection
             else:
                 if self.predict:
-                    query_data = ['consecutive', self.predict, self.set_split, [init_sample, final_sample],
-                                    self.params['normalization'], self.params['normalization_type'],
-                                    self.params['mean_substraction'], data_augmentation]
+                    X_batch = self.dataset.getX(self.set_split,
+                                                init_sample,
+                                                final_sample,
+                                                normalization=self.params['normalization'],
+                                                normalization_type=self.params['normalization_type'],
+                                                meanSubstraction=self.params['mean_substraction'],
+                                                dataAugmentation=False)
+                    data = self.net.prepareData(X_batch, None)[0]
                 else:
-                    query_data = ['consecutive', self.predict, self.set_split, [batch_size],
-                                    self.params['normalization'], self.params['normalization_type'],
-                                    self.params['mean_substraction'], data_augmentation]
-
-            # Insert data in queue
-            in_queue.put(query_data)
-
-            # Check if there is processed data in queue
-            while out_queue.qsize() > 0:
-                data = out_queue.get()
-                yield(data)
+                    X_batch, Y_batch = self.dataset.getXY(self.set_split,
+                                                          batch_size,
+                                                          normalization=self.params['normalization'],
+                                                          normalization_type=self.params['normalization_type'],
+                                                          meanSubstraction=self.params['mean_substraction'],
+                                                          dataAugmentation=data_augmentation)
+                    data = self.net.prepareData(X_batch, Y_batch)
+            yield (data)
 
 
 class Homogeneous_Data_Batch_Generator(object):
@@ -505,6 +506,7 @@ class Dataset(object):
         self.vocabulary_len = dict()  # number of words in the vocabulary
         self.text_offset = dict()  # number of timesteps that the text is shifted (to the right)
         self.fill_text = dict()  # text padding mode
+        self.label_smoothing = dict() # Epsilon value for label smoothing. See arxiv.org/abs/1512.00567.
         self.pad_on_batch = dict()  # text padding mode: If pad_on_batch, the sample will have the maximum length
         # of the current batch. Else, it will have a fixed length (max_text_len)
         self.words_so_far = dict()  # if True, each sample will be represented as the complete set of words until
@@ -919,8 +921,7 @@ class Dataset(object):
             logging.info('Loaded "' + set_name + '" set inputs of type "' + type + '" with id "' + id + '".')
 
     def setOutput(self, path_list, set_name, type='categorical', id='label', repeat_set=1, overwrite_split=False,
-                  add_additional=False,
-                  sample_weights=False,
+                  add_additional=False, sample_weights=False, label_smoothing=0.,
                   tokenization='tokenize_none', max_text_len=0, offset=0, fill='end', min_occ=0,  # 'text'
                   pad_on_batch=True, words_so_far=False, build_vocabulary=False, max_words=0,  # 'text'
                   bpe_codes=None, separator='@@',  # 'text'
@@ -943,7 +944,7 @@ class Dataset(object):
                                 the data with id that was already declared in the dataset
         :param add_additional: adds additional data to an already existent output ID
         :param sample_weights: switch on/off sample weights usage for the current output
-
+        :param label_smoothing: epsilon value for label smoothing. See arxiv.org/abs/1512.00567.
             # 'text'-related parameters
 
         :param tokenization: type of tokenization applied (must be declared as a method of this class)
@@ -991,6 +992,10 @@ class Dataset(object):
             raise NotImplementedError(
                 'The output type "' + type + '" is not implemented. The list of valid types are the following: ' + str(
                     self.__accepted_types_outputs))
+
+        if self.label_smoothing.get(id) is None:
+            self.label_smoothing[id] = dict()
+        self.label_smoothing[id][set_name] = label_smoothing
 
         # Preprocess the output data depending on its type
         if type == 'categorical':
@@ -1891,7 +1896,7 @@ class Dataset(object):
         return X_out
 
     def loadTextOneHot(self, X, vocabularies, vocabulary_len, max_len, offset, fill, pad_on_batch, words_so_far,
-                       sample_weights=False, loading_X=False):
+                       sample_weights=False, loading_X=False, label_smoothing=0.):
 
         """
         Text encoder: Transforms samples from a text representation into a one-hot. It also masks the text.
@@ -1921,8 +1926,9 @@ class Dataset(object):
         else:
             y_aux = np.zeros(list(y[0].shape) + [vocabulary_len]).astype(np.uint8)
             for idx in range(y[0].shape[0]):
-                y_aux[idx] = to_categorical(y[0][idx], vocabulary_len).astype(
-                    np.uint8)
+                y_aux[idx] = to_categorical(y[0][idx], vocabulary_len).astype(np.uint8)
+                if label_smoothing > 0.:
+                    y_aux[idx] = ((1-label_smoothing) * y_aux[idx] + (label_smoothing / vocabulary_len)).astype(np.float32)
             if sample_weights:
                 y_aux = (y_aux, y[1])  # join data and mask
         return y_aux
@@ -3333,8 +3339,7 @@ class Dataset(object):
                                                   self.img_size[assoc_id_in], self.img_size_crop[assoc_id_in],
                                                   imlist)
                 elif type_out == 'text' or type_out == 'dense_text':
-                    y = self.loadText(y, self.vocabulary[id_out],
-                                      self.max_text_len[id_out][set_name], self.text_offset[id_out],
+                    y = self.loadText(y, self.vocabulary[id_out], self.max_text_len[id_out][set_name], self.text_offset[id_out],
                                       fill=self.fill_text[id_out], pad_on_batch=self.pad_on_batch[id_out],
                                       words_so_far=self.words_so_far[id_out], loading_X=False)
                     # Use whole sentence as class (classifier model)
@@ -3342,9 +3347,15 @@ class Dataset(object):
                         y = to_categorical(y, self.vocabulary_len[id_out]).astype(np.uint8)
                     # Use words separately (generator model)
                     elif type_out == 'text':
-                        y_aux = np.zeros(list(y[0].shape) + [self.vocabulary_len[id_out]]).astype(np.uint8)
+                        if hasattr(self, 'label_smoothing') and self.label_smoothing[id_out][set_name] > 0.:
+                            y_aux_type = np.float32
+                        else:
+                            y_aux_type = np.uint8
+                        y_aux = np.zeros(list(y[0].shape) + [self.vocabulary_len[id_out]]).astype(y_aux_type)
                         for idx in range(y[0].shape[0]):
-                            y_aux[idx] = to_categorical(y[0][idx], self.vocabulary_len[id_out]).astype(np.uint8)
+                            y_aux[idx] = to_categorical(y[0][idx], self.vocabulary_len[id_out]).astype(y_aux_type)
+                            if hasattr(self, 'label_smoothing') and self.label_smoothing[id_out][set_name] > 0.:
+                                y_aux[idx] = ((1.-self.label_smoothing[id_out][set_name]) * y_aux[idx] + (self.label_smoothing[id_out][set_name] / self.vocabulary_len[id_out]))
                         if self.sample_weights[id_out][set_name]:
                             y_aux = (y_aux, y[1])  # join data and mask
                         y = y_aux
@@ -3475,10 +3486,15 @@ class Dataset(object):
                         y = to_categorical(y, self.vocabulary_len[id_out]).astype(np.uint8)
                     # Use words separately (generator model)
                     elif type_out == 'text':
-                        y_aux = np.zeros(list(y[0].shape) + [self.vocabulary_len[id_out]]).astype(np.uint8)
+                        if hasattr(self, 'label_smoothing') and self.label_smoothing[id_out][set_name] > 0.:
+                            y_aux_type = np.float32
+                        else:
+                            y_aux_type = np.uint8
+                        y_aux = np.zeros(list(y[0].shape) + [self.vocabulary_len[id_out]]).astype(y_aux_type)
                         for idx in range(y[0].shape[0]):
-                            y_aux[idx] = to_categorical(y[0][idx], self.vocabulary_len[id_out]).astype(
-                                np.uint8)
+                            y_aux[idx] = to_categorical(y[0][idx], self.vocabulary_len[id_out]).astype(y_aux_type)
+                            if hasattr(self, 'label_smoothing') and self.label_smoothing[id_out][set_name] > 0.:
+                                y_aux[idx] = ((1.-self.label_smoothing[id_out][set_name]) * y_aux[idx] + (self.label_smoothing[id_out][set_name] / self.vocabulary_len[id_out]))
                         if self.sample_weights[id_out][set_name]:
                             y_aux = (y_aux, y[1])  # join data and mask
                         y = y_aux
@@ -3638,10 +3654,15 @@ class Dataset(object):
                         y = to_categorical(y, self.vocabulary_len[id_out]).astype(np.uint8)
                     # Use words separately (generator model)
                     elif type_out == 'text':
-                        y_aux = np.zeros(list(y[0].shape) + [self.vocabulary_len[id_out]]).astype(np.uint8)
+                        if hasattr(self, 'label_smoothing') and self.label_smoothing[id_out][set_name] > 0.:
+                            y_aux_type = np.float32
+                        else:
+                            y_aux_type = np.uint8
+                        y_aux = np.zeros(list(y[0].shape) + [self.vocabulary_len[id_out]]).astype(y_aux_type)
                         for idx in range(y[0].shape[0]):
-                            y_aux[idx] = to_categorical(y[0][idx], self.vocabulary_len[id_out]).astype(
-                                np.uint8)
+                            y_aux[idx] = to_categorical(y[0][idx], self.vocabulary_len[id_out]).astype(np.uint8)
+                            if hasattr(self, 'label_smoothing') and self.label_smoothing[id_out][set_name] > 0.:
+                                y_aux[idx] = ((1.-self.label_smoothing[id_out][set_name]) * y_aux[idx] + (self.label_smoothing[id_out][set_name] / self.vocabulary_len[id_out]))
                         if self.sample_weights[id_out][set_name]:
                             y_aux = (y_aux, y[1])  # join data and mask
 
